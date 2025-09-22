@@ -424,12 +424,19 @@ import.BuildGroupTables = function(self)
                 MaxLevel = tonumber(split[11])
             };
             
+            -- Skip groups with PoolId 0 (unimplemented/disabled mobs)
+            if group.PoolId == 0 then
+                -- These are placeholder entries, skip them
+                goto continue;
+            end
+            
             if self.Groups[group.Zone] == nil then
                 self.Groups[group.Zone] = T{};
             end
 
             self.Groups[group.Zone][group.GroupId] = group;
             groupCount = groupCount + 1;
+        ::continue::
         end
     end
     raw:close();
