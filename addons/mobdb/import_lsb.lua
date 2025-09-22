@@ -736,7 +736,42 @@ local function CompareMobs(a,b)
     return true;
 end
 
-import.ProcessMob = function(self, zoneData, mobIndex)
+-- Enhanced name normalization function
+local function NormalizeName(name)
+    -- Convert to lowercase and handle common patterns
+    local normalized = string.lower(name);
+    
+    -- Replace common patterns
+    normalized = string.gsub(normalized, "???", "qm");  -- Question marks to _qm
+    normalized = string.gsub(normalized, "'", "");      -- Remove apostrophes
+    normalized = string.gsub(normalized, "%s+", "");    -- Remove spaces
+    normalized = string.gsub(normalized, "_+", "");     -- Remove underscores
+    normalized = string.gsub(normalized, "%W", "");     -- Remove remaining non-word chars
+    
+    return normalized;
+end
+
+-- Enhanced name matching with fuzzy logic
+local function NamesMatch(sqlName, datName)
+    local sqlNorm = NormalizeName(sqlName);
+    local datNorm = NormalizeName(datName);
+    
+    -- Exact match after normalization
+    if (sqlNorm == datNorm) then
+        return true;
+    end
+    
+    -- Check if one name is a substring of the other (handles suffixes like _Still, _Fast)
+    if (string.find(sqlNorm, datNorm) or string.find(datNorm, sqlNorm)) then
+        -- Additional check: names should be reasonably similar in length
+        local lenDiff = math.abs(string.len(sqlNorm) - string.len(datNorm));
+        if (lenDiff <= 10) then  -- Allow up to 10 character difference for suffixes
+            return true;
+        end
+    end
+    
+    return false;
+end
     local data = self.ActiveMobs[mobIndex];
     if (data == nil) then
         return;
@@ -748,7 +783,7 @@ import.ProcessMob = function(self, zoneData, mobIndex)
     end
 
     local datName = self.ZoneDat[mobIndex].Name;
-    if (string.lower(string.gsub(data.Name, '%W', '')) ~= string.lower(string.gsub(datName, '%W', ''))) then
+    if not NamesMatch(data.Name, datName) then
         self.ErrorFile:write(string.format('[DAT MISMATCH] Zone:%s Index:%u Id:%u DAT Name:%s SQL Name:%s\n', AshitaCore:GetResourceManager():GetString(gCompatibility.Resource.Zone, self.ActiveZone), mobIndex, data.Id, self.ZoneDat[mobIndex].Name, data.Name));
         return;
     end
