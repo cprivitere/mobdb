@@ -1,5 +1,5 @@
 local import = {};
-local FFXIPATH = 'C:\\Ashita 4\\client\\FINAL FANTASY XI';
+local FFXIPATH = 'C:\\Ashita 4\\polplugins\\DATs\\Moos Server';
 local entityDatPaths = {
     [1] = 'ROM3\\2\\111.DAT',
     [2] = 'ROM3\\2\\112.DAT',
@@ -424,12 +424,19 @@ import.BuildGroupTables = function(self)
                 MaxLevel = tonumber(split[11])
             };
             
+            -- Skip groups with PoolId 0 (unimplemented/disabled mobs)
+            if group.PoolId == 0 then
+                -- These are placeholder entries, skip them
+                goto continue;
+            end
+            
             if self.Groups[group.Zone] == nil then
                 self.Groups[group.Zone] = T{};
             end
 
             self.Groups[group.Zone][group.GroupId] = group;
             groupCount = groupCount + 1;
+        ::continue::
         end
     end
     raw:close();
@@ -572,7 +579,7 @@ import.BuildMonsterTables = function(self)
             local monster = {
                 Id = tonumber(split[1]),
                 Name = string.sub(split[3], 2, #split[3] - 1),
-                Group = tonumber(split[4]),
+                Group = tonumber(split[5]), -- Fixed: Group is field 5, not 4
             };
             monster.Index = bit.band(monster.Id, 0x3FF);
             monster.Zone = bit.band(bit.rshift(monster.Id, 12), 0x1FF);
@@ -645,7 +652,18 @@ import.GenerateData = function(self)
     local zoneCount = 0;
     self.ProgressCount = 0;
     self.SuccessCount = 0;
+    
+    -- Error tracking
+    local errorStats = {
+        DatMismatch = 0,
+        MissingDat = 0,
+        MissingGroup = 0,
+        MissingPool = 0,
+        Other = 0
+    };
+    
     self.ErrorFile = io.open(string.format('%sconfig/addons/mobdb/output/errors.txt', AshitaCore:GetInstallPath()), 'w');
+    self.ErrorFile:write('=== FFXI Mob Database Import Results ===\n\n');
     for zoneId,mobs in pairs(self.Monsters) do
         self.ActiveGroups = self.Groups[zoneId];
         self.ActiveMobs = mobs;
@@ -660,7 +678,7 @@ import.GenerateData = function(self)
             };
 
             for mobIndex = 1,0x3FF do
-                self:ProcessMob(zoneData, mobIndex);
+                self:ProcessMob(zoneData, mobIndex, errorStats);
             end
             local sortedNames = T{};
             for _,monster in pairs(zoneData.Names) do
@@ -702,6 +720,16 @@ import.GenerateData = function(self)
         end
     end
     self.ErrorFile:write(string.format('Total Zones:%d Total Success:%d Total Failure:%d\n', zoneCount, self.SuccessCount, self.ProgressCount - self.SuccessCount));
+    
+    -- Write error breakdown
+    self.ErrorFile:write('\n=== Error Breakdown ===\n');
+    self.ErrorFile:write(string.format('DAT Name Mismatches: %d\n', errorStats.DatMismatch));
+    self.ErrorFile:write(string.format('Missing DAT Data: %d\n', errorStats.MissingDat));
+    self.ErrorFile:write(string.format('Missing Group Data: %d\n', errorStats.MissingGroup));
+    self.ErrorFile:write(string.format('Missing Pool Data: %d\n', errorStats.MissingPool));
+    self.ErrorFile:write(string.format('Other Errors: %d\n', errorStats.Other));
+    self.ErrorFile:write(string.format('Total Errors: %d\n', errorStats.DatMismatch + errorStats.MissingDat + errorStats.MissingGroup + errorStats.MissingPool + errorStats.Other));
+    
     self.ErrorFile:close();
     print(chat.header('MobDB') .. chat.message('Total Success:') .. chat.color1(2, self.SuccessCount) .. chat.message(' Total Failures:') .. chat.color1(2, string.format('%d', self.ProgressCount - self.SuccessCount)) .. chat.message(' Total Time:') .. chat.color1(2, string.format('%.2fs', os.clock() - startTime)));
 end
@@ -729,7 +757,44 @@ local function CompareMobs(a,b)
     return true;
 end
 
-import.ProcessMob = function(self, zoneData, mobIndex)
+-- Enhanced name normalization function
+local function NormalizeName(name)
+    -- Convert to lowercase and handle common patterns
+    local normalized = string.lower(name);
+    
+    -- Replace common patterns
+    normalized = string.gsub(normalized, "???", "qm");  -- Question marks to _qm
+    normalized = string.gsub(normalized, "'", "");      -- Remove apostrophes
+    normalized = string.gsub(normalized, "%s+", "");    -- Remove spaces
+    normalized = string.gsub(normalized, "_+", "");     -- Remove underscores
+    normalized = string.gsub(normalized, "%W", "");     -- Remove remaining non-word chars
+    
+    return normalized;
+end
+
+-- Enhanced name matching with fuzzy logic
+local function NamesMatch(sqlName, datName)
+    local sqlNorm = NormalizeName(sqlName);
+    local datNorm = NormalizeName(datName);
+    
+    -- Exact match after normalization
+    if (sqlNorm == datNorm) then
+        return true;
+    end
+    
+    -- Check if one name is a substring of the other (handles suffixes like _Still, _Fast)
+    if (string.find(sqlNorm, datNorm) or string.find(datNorm, sqlNorm)) then
+        -- Additional check: names should be reasonably similar in length
+        local lenDiff = math.abs(string.len(sqlNorm) - string.len(datNorm));
+        if (lenDiff <= 10) then  -- Allow up to 10 character difference for suffixes
+            return true;
+        end
+    end
+    
+    return false;
+end
+
+import.ProcessMob = function(self, zoneData, mobIndex, errorStats)
     local data = self.ActiveMobs[mobIndex];
     if (data == nil) then
         return;
@@ -737,11 +802,13 @@ import.ProcessMob = function(self, zoneData, mobIndex)
 
     self.ProgressCount = self.ProgressCount + 1;
     if (type(self.ZoneDat) ~= 'table') or (self.ZoneDat[mobIndex] == nil) then
+        if errorStats then errorStats.MissingDat = errorStats.MissingDat + 1; end
         return;
     end
 
     local datName = self.ZoneDat[mobIndex].Name;
-    if (string.lower(string.gsub(data.Name, '%W', '')) ~= string.lower(string.gsub(datName, '%W', ''))) then
+    if not NamesMatch(data.Name, datName) then
+        if errorStats then errorStats.DatMismatch = errorStats.DatMismatch + 1; end
         self.ErrorFile:write(string.format('[DAT MISMATCH] Zone:%s Index:%u Id:%u DAT Name:%s SQL Name:%s\n', AshitaCore:GetResourceManager():GetString(gCompatibility.Resource.Zone, self.ActiveZone), mobIndex, data.Id, self.ZoneDat[mobIndex].Name, data.Name));
         return;
     end
@@ -749,16 +816,19 @@ import.ProcessMob = function(self, zoneData, mobIndex)
 
     local group = self.ActiveGroups[data.Group];
     if (group == nil) then
+        if errorStats then errorStats.MissingGroup = errorStats.MissingGroup + 1; end
         return;
     end
     
     local pool = self.Pools[group.PoolId];
     if (pool == nil) then
+        if errorStats then errorStats.MissingPool = errorStats.MissingPool + 1; end
         return;
     end
     
     local family = self.Families[pool.FamilyId];
     if (family == nil) then
+        if errorStats then errorStats.Other = errorStats.Other + 1; end
         return;
     end
 
