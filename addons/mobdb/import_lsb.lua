@@ -1,5 +1,5 @@
 local import = {};
-local FFXIPATH = 'C:\\Ashita 4\\client\\FINAL FANTASY XI';
+local FFXIPATH = 'C:\\Ashita 4\\polplugins\\DATs\\Moos Server';
 local entityDatPaths = {
     [1] = 'ROM3\\2\\111.DAT',
     [2] = 'ROM3\\2\\112.DAT',
@@ -652,7 +652,18 @@ import.GenerateData = function(self)
     local zoneCount = 0;
     self.ProgressCount = 0;
     self.SuccessCount = 0;
+    
+    -- Error tracking
+    local errorStats = {
+        DatMismatch = 0,
+        MissingDat = 0,
+        MissingGroup = 0,
+        MissingPool = 0,
+        Other = 0
+    };
+    
     self.ErrorFile = io.open(string.format('%sconfig/addons/mobdb/output/errors.txt', AshitaCore:GetInstallPath()), 'w');
+    self.ErrorFile:write('=== FFXI Mob Database Import Results ===\n\n');
     for zoneId,mobs in pairs(self.Monsters) do
         self.ActiveGroups = self.Groups[zoneId];
         self.ActiveMobs = mobs;
@@ -667,7 +678,7 @@ import.GenerateData = function(self)
             };
 
             for mobIndex = 1,0x3FF do
-                self:ProcessMob(zoneData, mobIndex);
+                self:ProcessMob(zoneData, mobIndex, errorStats);
             end
             local sortedNames = T{};
             for _,monster in pairs(zoneData.Names) do
@@ -709,6 +720,16 @@ import.GenerateData = function(self)
         end
     end
     self.ErrorFile:write(string.format('Total Zones:%d Total Success:%d Total Failure:%d\n', zoneCount, self.SuccessCount, self.ProgressCount - self.SuccessCount));
+    
+    -- Write error breakdown
+    self.ErrorFile:write('\n=== Error Breakdown ===\n');
+    self.ErrorFile:write(string.format('DAT Name Mismatches: %d\n', errorStats.DatMismatch));
+    self.ErrorFile:write(string.format('Missing DAT Data: %d\n', errorStats.MissingDat));
+    self.ErrorFile:write(string.format('Missing Group Data: %d\n', errorStats.MissingGroup));
+    self.ErrorFile:write(string.format('Missing Pool Data: %d\n', errorStats.MissingPool));
+    self.ErrorFile:write(string.format('Other Errors: %d\n', errorStats.Other));
+    self.ErrorFile:write(string.format('Total Errors: %d\n', errorStats.DatMismatch + errorStats.MissingDat + errorStats.MissingGroup + errorStats.MissingPool + errorStats.Other));
+    
     self.ErrorFile:close();
     print(chat.header('MobDB') .. chat.message('Total Success:') .. chat.color1(2, self.SuccessCount) .. chat.message(' Total Failures:') .. chat.color1(2, string.format('%d', self.ProgressCount - self.SuccessCount)) .. chat.message(' Total Time:') .. chat.color1(2, string.format('%.2fs', os.clock() - startTime)));
 end
@@ -772,6 +793,8 @@ local function NamesMatch(sqlName, datName)
     
     return false;
 end
+
+import.ProcessMob = function(self, zoneData, mobIndex, errorStats)
     local data = self.ActiveMobs[mobIndex];
     if (data == nil) then
         return;
@@ -779,11 +802,13 @@ end
 
     self.ProgressCount = self.ProgressCount + 1;
     if (type(self.ZoneDat) ~= 'table') or (self.ZoneDat[mobIndex] == nil) then
+        if errorStats then errorStats.MissingDat = errorStats.MissingDat + 1; end
         return;
     end
 
     local datName = self.ZoneDat[mobIndex].Name;
     if not NamesMatch(data.Name, datName) then
+        if errorStats then errorStats.DatMismatch = errorStats.DatMismatch + 1; end
         self.ErrorFile:write(string.format('[DAT MISMATCH] Zone:%s Index:%u Id:%u DAT Name:%s SQL Name:%s\n', AshitaCore:GetResourceManager():GetString(gCompatibility.Resource.Zone, self.ActiveZone), mobIndex, data.Id, self.ZoneDat[mobIndex].Name, data.Name));
         return;
     end
@@ -791,16 +816,19 @@ end
 
     local group = self.ActiveGroups[data.Group];
     if (group == nil) then
+        if errorStats then errorStats.MissingGroup = errorStats.MissingGroup + 1; end
         return;
     end
     
     local pool = self.Pools[group.PoolId];
     if (pool == nil) then
+        if errorStats then errorStats.MissingPool = errorStats.MissingPool + 1; end
         return;
     end
     
     local family = self.Families[pool.FamilyId];
     if (family == nil) then
+        if errorStats then errorStats.Other = errorStats.Other + 1; end
         return;
     end
 
