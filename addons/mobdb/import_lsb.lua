@@ -579,7 +579,7 @@ import.BuildMonsterTables = function(self)
             local monster = {
                 Id = tonumber(split[1]),
                 Name = string.sub(split[3], 2, #split[3] - 1),
-                Group = tonumber(split[4]),
+                Group = tonumber(split[5]), -- Fixed: Group is field 5, not 4
             };
             monster.Index = bit.band(monster.Id, 0x3FF);
             monster.Zone = bit.band(bit.rshift(monster.Id, 12), 0x1FF);
